@@ -1,0 +1,57 @@
+- name: Configure SSH & Initial Server Setup
+  hosts: swarm_managers
+  become: true
+  roles:
+    - role: configure_ssh
+  tasks:
+    - name: Update packages
+      ansible.builtin.apt:
+        update_cache: true
+        upgrade: dist
+
+- name: Install Docker & docker-compose
+  hosts: swarm_managers
+  become: true
+  roles:
+    - role: geerlingguy.docker
+      docker_users:
+        - '{{ ansible_ssh_user }}'
+  tasks:
+    - name: Download docker-compose bash completion script
+      ansible.builtin.get_url:
+        url: https://raw.githubusercontent.com/docker/compose/1.28.6/contrib/completion/bash/docker-compose
+        dest: /etc/bash_completion.d/docker-compose
+
+# Setup the initial manager node if it is not already configured
+- name: Bootstrap Docker Swarm Cluster
+  hosts: swarm_managers[0]
+  become: true
+  tasks:
+    - name: Check if swarm is already active
+      ansible.builtin.shell:
+        cmd: "docker info | grep 'Swarm:'"
+      register: docker_swarm_status
+      ignore_errors: true
+    - name: Initialize the docker swarm Cluster
+      ansible.builtin.shell: docker swarm init
+      when: "'inactive' in docker_swarm_status.stdout"
+    - name: Get a Docker Swarm join token (manager)
+      ansible.builtin.shell: docker swarm join-token -q manager
+      register: swarm_manager_token
+    - name: Save as fact
+      ansible.builtin.set_fact: 'swarm_manager_token = {{ swarm_manager_token.stdout }}'
+
+# Add the remaining nodes to the Swarm cluster as manager nodes
+- name: Add Additional Manager Nodes to the Cluster
+  hosts: swarm_managers[1:]
+  become: true
+  tasks:
+    - name: Check if Docker Swarm is already active on host
+      ansible.builtin.shell:
+        cmd: "docker info | grep 'Swarm:'"
+      register: docker_swarm_status
+      ignore_errors: true
+    - name: Join host to Docker Swarm cluster
+      ansible.builtin.shell:
+        cmd: "docker swarm join --token {{ hostvars['docker_swarm_01']['swarm_manager_token'].stdout }} {{ hostvars['docker_swarm_01']['ansible_host'] }}:2377"
+      when: "'inactive' in docker_swarm_status.stdout"

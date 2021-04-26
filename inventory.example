@@ -1,0 +1,8 @@
+[local]
+localhost ansible_connection=local
+
+# The first entry in this list will be used in the intial creation of the Docker Swarm cluster
+[swarm_managers]
+docker_swarm_01 ansible_ssh_user=ubuntu ansible_host=192.168.42.1
+docker_swarm_02 ansible_ssh_user=ubuntu ansible_host=192.168.42.2
+docker_swarm_03 ansible_ssh_user=ubuntu ansible_host=192.168.42.3
