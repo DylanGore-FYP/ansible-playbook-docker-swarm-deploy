@@ -16,6 +16,8 @@ jobs:
         run: python3 -m pip install --upgrade pip
       - name: Install ansible and ansible-lint
         run: python3 -m pip install ansible ansible-lint
+      - name: Create a dummy vars.yml file
+        run: cp vars/vars.sample.yml vars/vars.yml
       - name: Get Ansible Roles
         run: ansible-galaxy install -r requirements.yml -p roles --force
       - name: Run ansible-lint
