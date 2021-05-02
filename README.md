@@ -12,6 +12,26 @@
 
 An Ansible Playbook that performs initial server setup, installs Docker and configures a Docker Swarm cluster.
 
+## Running
+
+Please create an `inventory` file based on the included example file. You should also create a `vars/vars.yaml` file based on the example variables file.
+
+Get the required roles by running:
+
+```bash
+ansible-galaxy install -r requirements.yml -p roles --force
+```
+
+Run the playbook:
+
+```bash
+ansible-playbook -i inventory playbook.yml
+```
+
+## Commit Message Convention
+
+This project uses [Gitmoji](https://gitmoji.dev/) for commit organisation. For more details see the [Gitmoji Repository](https://github.com/carloscuesta/gitmoji).
+
 ## Contributors
 
 <!-- ALL-CONTRIBUTORS-LIST:START - Do not remove or modify this section -->
@@ -28,3 +48,5 @@ An Ansible Playbook that performs initial server setup, installs Docker and conf
 <!-- prettier-ignore-end -->
 
 <!-- ALL-CONTRIBUTORS-LIST:END -->
+
+This project follows the [all-contributors](https://github.com/all-contributors/all-contributors) specification.
