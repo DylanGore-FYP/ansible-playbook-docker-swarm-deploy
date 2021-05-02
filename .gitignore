@@ -12,3 +12,6 @@
 .cache
 roles/*
 inventory
+
+vars.yml
+mqtt_logins

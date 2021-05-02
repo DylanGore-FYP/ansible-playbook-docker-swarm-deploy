@@ -1,0 +1,17 @@
+version: '3.8'
+services:
+  influxdb2:
+    image: influxdb:2.0.4-alpine
+    security_opt:
+      - no-new-privileges:true
+    network_mode: bridge
+    environment:
+      INFLUXD_REPORTING_DISABLED: 'true'
+      DOCKER_INFLUXDB_INIT_MODE: setup
+      DOCKER_INFLUXDB_INIT_USERNAME: '{{ influx_username }}'
+      DOCKER_INFLUXDB_INIT_PASSWORD: '{{ influx_password }}'
+      DOCKER_INFLUXDB_INIT_ORG: '{{ influx_org }}'
+      DOCKER_INFLUXDB_INIT_BUCKET: '{{ influx_bucket }}'
+    volumes:
+      - /etc/timezone:/etc/timezone:ro
+      - /etc/localtime:/etc/localtime:ro

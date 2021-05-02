@@ -1,21 +1,128 @@
+# Fail if all the required confg files are not found
+- name: Check that the required config files are present
+  hosts: localhost
+  become: false
+  tasks:
+    # serviceAccountKey.json
+    # - name: Check that the serviceAccountKey.json file exists
+    #   ansible.builtin.stat:
+    #     path: ./templates/serviceAccountKey.json
+    #   register: file_result
+    # - name: Fail if ./templates/serviceAccountKey.json is missing
+    #   ansible.builtin.fail:
+    #     msg: Could not find ./templates/serviceAccountKey.json
+    #   when: not file_result.stat.exists
+    # mqtt_logins
+    - name: Check that the mqtt_logins file exists
+      ansible.builtin.stat:
+        path: ./templates/mqtt_logins
+      register: file_result
+    - name: Fail if ./templates/mqtt_logins is missing
+      ansible.builtin.fail:
+        msg: Could not find ./templates/mqtt_logins
+      when: not file_result.stat.exists
+      # alertmanager.yml
+    # - name: Check that the alertmanager.yml file exists
+    #   ansible.builtin.stat:
+    #     path: ./templates/alertmanager.yml
+    #   register: file_result
+    # - name: Fail if ./templates/alertmanager.yml is missing
+    #   ansible.builtin.fail:
+    #     msg: Could not find ./templates/alertmanager.yml
+    #   when: not file_result.stat.exists
+
+- name: Create a new user
+  hosts: swarm_managers
+  become: true
+  vars_files:
+    - vars/vars.yml
+  tasks:
+    - name: Add a new user (with password)
+      ansible.builtin.user:
+        name: '{{ docker_user_name }}'
+        password: '{{ docker_user_password }}'
+        shell: /bin/bash
+        groups: sudo
+        append: true
+      when: docker_user_password is defined and create_new_user
+
+    - name: Add a new user (without password)
+      ansible.builtin.user:
+        name: '{{ docker_user_name }}'
+        shell: /bin/bash
+        groups: sudo
+        append: true
+      when: docker_user_password is not defined and create_new_user
+
+    - name: Create a sudoers.d file to allow new user passwordless sudo
+      ansible.builtin.template:
+        src: templates/sudoers.j2
+        dest: /etc/sudoers.d/docker-user
+        owner: root
+        group: root
+        mode: ug+rwX,o=
+      when: create_new_user
+
 - name: Configure SSH & Initial Server Setup
   hosts: swarm_managers
   become: true
+  vars_files:
+    - vars/vars.yml
   roles:
+    # Add SSH keys for the current SSH user
     - role: configure_ssh
+      ssh_key_user: '{{ ansible_ssh_user }}'
+      ssh_keys:
+        - '{{ ssh_key_location }}'
+    # Add SSH keys for the new user (if created)
+    - role: configure_ssh
+      ssh_key_user: '{{ docker_user_name }}'
+      ssh_keys:
+        - '{{ ssh_key_location }}'
+      when: create_new_user
+    # Install Node Exporter for Prometheus metrics
+    - role: cloudalchemy.node_exporter
   tasks:
     - name: Update packages
       ansible.builtin.apt:
         update_cache: true
+    - name: Update packages
+      ansible.builtin.apt:
         upgrade: dist
+      when: run_apt_update
+    - name: Install the required dependencies
+      ansible.builtin.apt:
+        name: python3-docker
+        state: present
 
 - name: Install Docker & docker-compose
   hosts: swarm_managers
   become: true
+  vars_files:
+    - vars/vars.yml
   roles:
+    # Install Docker (x86)
     - role: geerlingguy.docker
       docker_users:
         - '{{ ansible_ssh_user }}'
+        - '{{ docker_user_name }}'
+      when: ansible_architecture == 'x86_64'
+    # Install Docker (x86) - no new user
+    - role: geerlingguy.docker
+      docker_users:
+        - '{{ ansible_ssh_user }}'
+      when: ansible_architecture == 'x86_64' and not create_new_user
+    # Install Docker (arm)
+    - role: geerlingguy.docker_arm
+      docker_users:
+        - '{{ ansible_ssh_user }}'
+        - '{{ docker_user_name }}'
+      when: ansible_architecture != 'x86_64'
+    # Install Docker (arm) - no new user
+    - role: geerlingguy.docker_arm
+      docker_users:
+        - '{{ ansible_ssh_user }}'
+      when: ansible_architecture != 'x86_64'  and not create_new_user
   tasks:
     - name: Download docker-compose bash completion script
       ansible.builtin.get_url:
@@ -26,6 +133,8 @@
 - name: Bootstrap Docker Swarm Cluster
   hosts: swarm_managers[0]
   become: true
+  vars_files:
+    - vars/vars.yml
   tasks:
     - name: Check if swarm is already active
       ansible.builtin.shell:
@@ -45,6 +154,8 @@
 - name: Add Additional Manager Nodes to the Cluster
   hosts: swarm_managers[1:]
   become: true
+  vars_files:
+    - vars/vars.yml
   tasks:
     - name: Check if Docker Swarm is already active on host
       ansible.builtin.shell:
@@ -55,3 +166,172 @@
       ansible.builtin.shell:
         cmd: "docker swarm join --token {{ hostvars['docker_swarm_01']['swarm_manager_token'].stdout }} {{ hostvars['docker_swarm_01']['ansible_host'] }}:2377"
       when: "'inactive' in docker_swarm_status.stdout"
+
+# Spin up a temportary InfluxDB container to generate an admin token
+- name: Setup InfluxDB
+  hosts: swarm_managers[0]
+  vars_files:
+    - vars/vars.yml
+  become: true
+  tasks:
+    - name: Check to see if the influx-admin-token file exists
+      ansible.builtin.stat:
+        path: ~/.ansible-influx-admin-token
+      register: influx_token_file
+
+    - name: Read Influx admin token from file
+      ansible.builtin.shell:
+        cmd: cat ~/.ansible-influx-admin-token
+      register: influx_token_file_contents
+      when: influx_token_file.stat.exists
+
+    - name: Save the InfluxDB admin token as a fact (from file)
+      ansible.builtin.set_fact:
+        influx_admin_token: '{{ influx_token_file_contents.stdout }}'
+      when: influx_token_file.stat.exists
+
+    - name: Create a directory to store the initial docker files
+      ansible.builtin.file:
+        path: '~/docker/initial'
+        state: directory
+      when: not influx_token_file.stat.exists
+
+    - name: Upload the bootstrap docker-compose file
+      ansible.builtin.template:
+        src: templates/docker-compose.initial.j2.yml
+        dest: '~/docker/initial/docker-compose.yml'
+      when: not influx_token_file.stat.exists
+
+    - name: Bring up the bootstrap containers
+      ansible.builtin.shell: |
+        docker-compose up -d
+      args:
+        chdir: ~/docker/initial
+      when: not influx_token_file.stat.exists
+
+    - name: Wait 30 seconds for the database to be initialised
+      pause:
+        seconds: '30'
+      when: not influx_token_file.stat.exists
+
+    - name: Get the admin token from the InfluxDB container
+      ansible.builtin.shell: |
+        docker exec -it initial_influxdb2_1 influx auth list --user {{ influx_username }} | awk 'FNR == 2 {print $4}' | tr "\t" "\n"
+      register: influx_admin_token_result
+      when: not influx_token_file.stat.exists
+
+    - name: Save the InfluxDB admin token as a fact
+      ansible.builtin.set_fact:
+        influx_admin_token: '{{ influx_admin_token_result.stdout }}'
+      when: "not influx_token_file.stat.exists and 'list' not in influx_admin_token_result.stdout"
+
+    - name: Fail if the InfluxDB admin token could not be read
+      ansible.builtin.fail:
+        msg: Unable to get InfluxDB admin token
+      when: "not influx_token_file.stat.exists and 'list' in influx_admin_token_result.stdout"
+
+    - name: Write the InfluxDB token to a file
+      ansible.builtin.copy:
+        content: '{{ influx_admin_token }}'
+        dest: ~/.ansible-influx-admin-token
+        mode: u+rw,g-wx,o-rwx
+      when: not influx_token_file.stat.exists
+
+    - name: Copy the token file to the docker user's home directory
+      ansible.builtin.copy:
+        remote_src: true
+        src: ~/.ansible-influx-admin-token
+        dest: '/home/{{ docker_user_name }}/.ansible-influx-admin-token'
+        owner: '{{ docker_user_name }}'
+        group: '{{ docker_user_name }}'
+        mode: u+rw,g-wx,o-rwx
+      when: not influx_token_file.stat.exists
+
+    - name: Bring down the bootstrap container
+      ansible.builtin.shell: |
+        docker-compose down
+      args:
+        chdir: ~/docker/initial
+      when: not influx_token_file.stat.exists
+
+    - name: Remove the initial docker-compose files
+      ansible.builtin.file:
+        path: ~/docker/initial
+        state: absent
+      when: not influx_token_file.stat.exists
+
+- name: Deploy Everything
+  hosts: swarm_managers
+  vars_files:
+    - vars/vars.yml
+  become: true
+  tasks:
+    - name: Create the mosquitto config directory
+      ansible.builtin.file:
+        state: directory
+        path: /opt/mosquitto/config
+        owner: '{{ docker_user_name }}'
+        group: docker
+    - name: Create the mosquitto config file
+      ansible.builtin.template:
+        src: templates/mosquitto.conf
+        dest: /opt/mosquitto/config/mosquitto.conf
+        owner: '{{ docker_user_name }}'
+        group: docker
+
+    - name: Upload the Mosquitto password file
+      ansible.builtin.template:
+        src: templates/mqtt_logins
+        dest: /opt/mosquitto/passwd
+        owner: '{{ docker_user_name }}'
+        group: docker
+
+    - name: Create /opt/mosquitto/data
+      ansible.builtin.file:
+        path: /opt/mosquitto/data
+        state: directory
+        owner: '{{ docker_user_name }}'
+        group: docker
+
+    - name: Hash the passwords in the Mosquitto passwords file using a temporary container
+      ansible.builtin.shell: |
+        docker run --rm --mount type=bind,source=/opt/mosquitto/passwd,target=/mosquitto/passwd eclipse-mosquitto:openssl mosquitto_passwd -U /mosquitto/passwd
+
+    - name: Create a directory to store the initial docker files
+      become_user: '{{ docker_user_name }}'
+      ansible.builtin.file:
+        path: ~/docker/vehicles
+        state: directory
+
+    - name: Upload the bootstrap docker-compose file
+      become_user: '{{ docker_user_name }}'
+      ansible.builtin.template:
+        src: templates/docker-compose.j2.yml
+        dest: ~/docker/vehicles/docker-compose.yml
+        owner: '{{ docker_user_name }}'
+        group: '{{ docker_user_name }}'
+
+    - name: Set ownership on the required directories
+      ansible.builtin.file:
+        path: '/opt/{{ item }}'
+        state: directory
+        owner: '{{ docker_user_name }}'
+        group: docker
+      loop:
+        - influxdb
+        - mosquitto
+        - telegraf
+
+    - name: Bring up the containers
+      become_user: '{{ docker_user_name }}'
+      ansible.builtin.shell: |
+        docker-compose up -d
+      args:
+        chdir: ~/docker/vehicles
+
+    - name: Bring down the containers
+      become_user: '{{ docker_user_name }}'
+      ansible.builtin.shell: |
+        docker-compose down
+      args:
+        chdir: ~/docker/vehicles

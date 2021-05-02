@@ -1,0 +1,19 @@
+# Ansible
+ansible_python_interpreter: /usr/bin/python3
+
+# General
+run_apt_update: true
+
+# Docker User
+create_new_user: true
+docker_user_name: newUser # change
+# docker_user_password: '' # Uncomment if you want to set the user password, use mkpasswd  to generate a password hash
+
+# SSH
+ssh_key_location: '~/.ssh/id_rsa.pub' # change if required
+
+# InfluxDB
+influx_username: 'user' # change
+influx_password: 'SecurePassword01' # change
+influx_org: 'myorg' # change
+influx_bucket: vehicles
